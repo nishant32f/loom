@@ -12,53 +12,34 @@ import (
 	"github.com/nishant32f/loom/tmux"
 )
 
-// Focus represents which panel is focused
-type Focus int
-
-const (
-	FocusSidebar Focus = iota
-	FocusTerminal
-)
-
 const sidebarWidth = 24
 
-// App is the main application model
+// App is the sidebar-only Bubble Tea model (runs inside the left tmux pane)
 type App struct {
 	Groups      []*Group
 	ActiveGroup int
 	ActiveTab   int
-	Focus       Focus
 	Width       int
 	Height      int
 	Keys        keybinds.KeyMap
-	TmuxSession *tmux.Session
-	TermContent string
+	Session     string // tmux session name
 	Renaming    bool
 	RenameInput string
 	StatusMsg   string
 	LastClick   time.Time
 }
 
-// tickMsg is sent periodically to refresh the terminal
-type tickMsg time.Time
-
 // statusClearMsg clears the status message
 type statusClearMsg struct{}
 
-// NewApp creates a new App model
-func NewApp(cfg *config.Config) (*App, error) {
-	session, err := tmux.NewSession()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create tmux session: %w", err)
-	}
-
+// NewApp creates a new sidebar App from config
+func NewApp(cfg *config.Config, session string) (*App, error) {
 	app := &App{
 		Groups:      make([]*Group, 0),
 		ActiveGroup: 0,
 		ActiveTab:   0,
-		Focus:       FocusSidebar,
 		Keys:        keybinds.DefaultKeyMap(),
-		TmuxSession: session,
+		Session:     session,
 	}
 
 	// Build groups from config
@@ -84,63 +65,63 @@ func NewApp(cfg *config.Config) (*App, error) {
 		}
 
 		for _, tc := range sc.Tabs {
-			var winID string
-
 			if firstTab {
-				// Use the window :0 that was already created by NewSession
-				winID = session.Name + ":0"
+				// The first tab uses :0.1 (the right pane already exists)
+				tab := &Tab{
+					Name:          tc.Name,
+					HoldingWindow: -1, // active
+					Command:       tc.Cmd,
+					Cwd:           tc.Cwd,
+					GroupName:     group.Name,
+				}
+				group.Tabs = append(group.Tabs, tab)
 				if tc.Cmd != "" {
-					tmux.SendKeys(winID, tc.Cmd)
+					tmux.RunInPane(session, session+":0.1", tc.Cmd)
 				}
 				firstTab = false
 			} else {
-				win, err := session.NewWindow(tc.Name, tc.Cmd, tc.Cwd)
+				// Create a holding window for this tab
+				winIdx, err := tmux.CreateWindow(session, tc.Name)
 				if err != nil {
-					// Fallback to window 0
-					winID = session.Name + ":0"
-				} else {
-					winID = win.ID
+					continue
+				}
+				tab := &Tab{
+					Name:          tc.Name,
+					HoldingWindow: winIdx,
+					Command:       tc.Cmd,
+					Cwd:           tc.Cwd,
+					GroupName:     group.Name,
+				}
+				group.Tabs = append(group.Tabs, tab)
+				if tc.Cmd != "" {
+					tmux.RunInPane(session, fmt.Sprintf("%s:%d.0", session, winIdx), tc.Cmd)
 				}
 			}
-
-			tab := &Tab{
-				Name:    tc.Name,
-				TmuxID:  winID,
-				Command: tc.Cmd,
-				Cwd:     tc.Cwd,
-			}
-			group.Tabs = append(group.Tabs, tab)
-			tab.GroupName = group.Name
 		}
 	}
 
-	// If no groups were created, create a default one
+	// Default group if none created
 	if len(app.Groups) == 0 {
 		group := &Group{
 			Name:  "general",
 			Color: theme.Blue,
 			Tabs: []*Tab{
-				{Name: "shell", TmuxID: session.Name + ":0", GroupName: "general"},
+				{Name: "shell", HoldingWindow: -1, GroupName: "general"},
 			},
 		}
 		app.Groups = append(app.Groups, group)
 	}
 
+	// Select window 0 so the sidebar pane is visible
+	tmux.SelectWindow(session, 0)
+
+	app.saveState()
 	return app, nil
 }
 
 // Init implements tea.Model
 func (a *App) Init() tea.Cmd {
-	return tea.Batch(
-		tickCmd(),
-		tea.SetWindowTitle("Loom"),
-	)
-}
-
-func tickCmd() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
+	return tea.SetWindowTitle("Loom")
 }
 
 // ActiveTabRef returns the currently active tab
@@ -172,20 +153,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.Height = msg.Height
 		return a, nil
 
-	case tickMsg:
-		tab := a.ActiveTabRef()
-		if tab != nil {
-			termWidth := a.Width - sidebarWidth - 4
-			termHeight := a.Height - 4
-			if termWidth > 10 && termHeight > 5 {
-				content, err := tmux.CapturePaneContent(tab.TmuxID, termWidth, termHeight)
-				if err == nil {
-					a.TermContent = content
-				}
-			}
-		}
-		return a, tickCmd()
-
 	case statusClearMsg:
 		a.StatusMsg = ""
 		return a, nil
@@ -196,9 +163,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if a.Renaming {
 			return a.handleRenameKey(msg)
-		}
-		if a.Focus == FocusTerminal {
-			return a.handleTerminalKey(msg)
 		}
 		return a.handleSidebarKey(msg)
 	}
@@ -212,55 +176,47 @@ func (a *App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Action != tea.MouseActionRelease {
 			return a, nil
 		}
-		x := msg.X
-		if x < sidebarWidth {
-			y := msg.Y
-			sidebarHeight := a.Height - 1
+		y := msg.Y
+		sidebarHeight := a.Height - 1
 
-			// Check if click is on bottom buttons (last 3 rows)
-			if y >= sidebarHeight-3 && y < sidebarHeight-1 {
-				if x < 12 {
-					return a.addNewTab()
-				}
-				return a.addNewGroup()
+		// Check bottom buttons area
+		if y >= sidebarHeight-5 && y < sidebarHeight-3 {
+			x := msg.X
+			if x < 14 {
+				return a.addNewTab()
 			}
+			return a.addNewGroup()
+		}
 
-			// Click in sidebar tab/group area
-			items := GetSidebarItems(a.Groups)
-			if y >= 0 && y < len(items) {
-				item := items[y]
-				switch item.Type {
-				case "group_header":
-					a.Groups[item.GroupIdx].Collapsed = !a.Groups[item.GroupIdx].Collapsed
-				case "tab":
-					now := time.Now()
-					if item.GroupIdx == a.ActiveGroup && item.TabIdx == a.ActiveTab &&
-						now.Sub(a.LastClick) < 400*time.Millisecond {
-						a.Renaming = true
-						tab := a.ActiveTabRef()
-						if tab != nil {
-							a.RenameInput = tab.Name
-						}
-					} else {
-						a.ActiveGroup = item.GroupIdx
-						a.ActiveTab = item.TabIdx
+		// Click in tab/group area
+		items := GetSidebarItems(a.Groups)
+		if y >= 0 && y < len(items) {
+			item := items[y]
+			switch item.Type {
+			case "group_header":
+				a.Groups[item.GroupIdx].Collapsed = !a.Groups[item.GroupIdx].Collapsed
+				a.saveState()
+			case "tab":
+				now := time.Now()
+				if item.GroupIdx == a.ActiveGroup && item.TabIdx == a.ActiveTab &&
+					now.Sub(a.LastClick) < 400*time.Millisecond {
+					// Double-click: rename
+					a.Renaming = true
+					tab := a.ActiveTabRef()
+					if tab != nil {
+						a.RenameInput = tab.Name
 					}
-					a.LastClick = now
+				} else {
+					a.switchToTab(item.GroupIdx, item.TabIdx)
 				}
+				a.LastClick = now
 			}
-			a.Focus = FocusSidebar
-		} else {
-			a.Focus = FocusTerminal
 		}
 
 	case tea.MouseButtonWheelUp:
-		if msg.X < sidebarWidth {
-			a.moveToPrevTab()
-		}
+		a.moveToPrevTab()
 	case tea.MouseButtonWheelDown:
-		if msg.X < sidebarWidth {
-			a.moveToNextTab()
-		}
+		a.moveToNextTab()
 	}
 
 	return a, nil
@@ -272,7 +228,11 @@ func (a *App) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		tab := a.ActiveTabRef()
 		if tab != nil && a.RenameInput != "" {
 			tab.Name = a.RenameInput
-			tmux.RenameWindow(tab.TmuxID, a.RenameInput)
+			// Rename the tmux window if it has a holding window
+			if tab.HoldingWindow >= 0 {
+				tmux.RenameWindow(a.Session, tab.HoldingWindow, a.RenameInput)
+			}
+			a.saveState()
 		}
 		a.Renaming = false
 		a.RenameInput = ""
@@ -291,63 +251,6 @@ func (a *App) handleRenameKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
-func (a *App) handleTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	tab := a.ActiveTabRef()
-
-	switch msg.String() {
-	case "esc":
-		a.Focus = FocusSidebar
-		return a, nil
-	case "ctrl+c":
-		return a, tea.Quit
-	case "ctrl+\\":
-		if tab != nil {
-			tmux.SplitWindow(tab.TmuxID, true, "")
-		}
-		return a, nil
-	case "alt+n":
-		return a.addNewTab()
-	case "alt+w":
-		return a.closeCurrentTab()
-	case "alt+s":
-		return a.saveSession()
-	case "enter":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Enter")
-		}
-	case "backspace":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "BSpace")
-		}
-	case "tab":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Tab")
-		}
-	case "up":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Up")
-		}
-	case "down":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Down")
-		}
-	case "left":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Left")
-		}
-	case "right":
-		if tab != nil {
-			tmux.SendSpecialKey(tab.TmuxID, "Right")
-		}
-	default:
-		if tab != nil && len(msg.String()) == 1 {
-			tmux.SendRawKeys(tab.TmuxID, msg.String())
-		}
-	}
-
-	return a, nil
-}
-
 func (a *App) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "q":
@@ -357,10 +260,12 @@ func (a *App) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		a.moveToNextTab()
 	case "enter":
-		a.Focus = FocusTerminal
+		// Switch to the selected tab and focus the right pane
+		a.switchToTab(a.ActiveGroup, a.ActiveTab)
 	case "tab":
 		if a.ActiveGroup < len(a.Groups) {
 			a.Groups[a.ActiveGroup].Collapsed = !a.Groups[a.ActiveGroup].Collapsed
+			a.saveState()
 		}
 	case "n":
 		return a.addNewTab()
@@ -376,14 +281,70 @@ func (a *App) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.Renaming = true
 			a.RenameInput = tab.Name
 		}
-	case "ctrl+\\":
-		tab := a.ActiveTabRef()
-		if tab != nil {
-			tmux.SplitWindow(tab.TmuxID, true, "")
-		}
 	}
 
 	return a, nil
+}
+
+// switchToTab handles swapping panes for the new tab architecture
+func (a *App) switchToTab(groupIdx, tabIdx int) {
+	if groupIdx < 0 || groupIdx >= len(a.Groups) {
+		return
+	}
+	group := a.Groups[groupIdx]
+	if tabIdx < 0 || tabIdx >= len(group.Tabs) {
+		return
+	}
+
+	newTab := group.Tabs[tabIdx]
+
+	// If the new tab is already active, just focus the right pane
+	if newTab.HoldingWindow == -1 {
+		a.ActiveGroup = groupIdx
+		a.ActiveTab = tabIdx
+		tmux.SelectPane(a.Session, a.Session+":0.1")
+		return
+	}
+
+	// Find the currently active tab (HoldingWindow == -1)
+	var currentTab *Tab
+	for _, g := range a.Groups {
+		for _, t := range g.Tabs {
+			if t.HoldingWindow == -1 {
+				currentTab = t
+				break
+			}
+		}
+		if currentTab != nil {
+			break
+		}
+	}
+
+	holdingWin := newTab.HoldingWindow
+
+	// Swap: right pane (:0.1) <-> holding window's pane (:W.0)
+	source := fmt.Sprintf("%s:0.1", a.Session)
+	target := fmt.Sprintf("%s:%d.0", a.Session, holdingWin)
+	err := tmux.SwapPane(a.Session, source, target)
+	if err != nil {
+		a.StatusMsg = "Swap failed"
+		return
+	}
+
+	// Update holding windows: current tab gets the holding window, new tab becomes active
+	if currentTab != nil {
+		currentTab.HoldingWindow = holdingWin
+	}
+	newTab.HoldingWindow = -1
+
+	a.ActiveGroup = groupIdx
+	a.ActiveTab = tabIdx
+
+	// Make sure window 0 is selected, then focus right pane
+	tmux.SelectWindow(a.Session, 0)
+	tmux.SelectPane(a.Session, a.Session+":0.1")
+
+	a.saveState()
 }
 
 func (a *App) moveToNextTab() {
@@ -429,23 +390,29 @@ func (a *App) addNewTab() (tea.Model, tea.Cmd) {
 	group := a.Groups[a.ActiveGroup]
 	name := fmt.Sprintf("tab-%d", len(group.Tabs)+1)
 
-	win, err := a.TmuxSession.NewWindow(name, "", "")
+	// Create a new holding window
+	winIdx, err := tmux.CreateWindow(a.Session, name)
 	if err != nil {
 		a.StatusMsg = "Failed to create tab"
 		return a, nil
 	}
 
 	tab := &Tab{
-		Name:      name,
-		TmuxID:    win.ID,
-		GroupName: group.Name,
+		Name:          name,
+		HoldingWindow: winIdx,
+		GroupName:     group.Name,
 	}
 	group.Tabs = append(group.Tabs, tab)
-	a.ActiveTab = len(group.Tabs) - 1
 
+	// Switch to the new tab
+	newTabIdx := len(group.Tabs) - 1
+	a.switchToTab(a.ActiveGroup, newTabIdx)
+
+	// Enter rename mode
 	a.Renaming = true
 	a.RenameInput = name
 
+	a.saveState()
 	return a, nil
 }
 
@@ -467,7 +434,47 @@ func (a *App) closeCurrentTab() (tea.Model, tea.Cmd) {
 	}
 
 	tab := group.Tabs[a.ActiveTab]
-	tmux.KillWindow(tab.TmuxID)
+
+	if tab.HoldingWindow == -1 {
+		// This tab is currently active in :0.1
+		// We need to swap another tab in before killing
+
+		// Find another tab to make active
+		var replacementGroup int
+		var replacementTab int
+		found := false
+		for gi, g := range a.Groups {
+			for ti, t := range g.Tabs {
+				if t != tab && t.HoldingWindow >= 0 {
+					replacementGroup = gi
+					replacementTab = ti
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+
+		if found {
+			// Swap the replacement in
+			repTab := a.Groups[replacementGroup].Tabs[replacementTab]
+			source := fmt.Sprintf("%s:0.1", a.Session)
+			target := fmt.Sprintf("%s:%d.0", a.Session, repTab.HoldingWindow)
+			holdingWin := repTab.HoldingWindow
+			tmux.SwapPane(a.Session, source, target)
+			repTab.HoldingWindow = -1
+
+			// Now the old active tab's content is in holdingWin — kill it
+			tmux.KillWindow(a.Session, holdingWin)
+		}
+	} else {
+		// Tab is in a holding window — just kill it
+		tmux.KillWindow(a.Session, tab.HoldingWindow)
+	}
+
+	// Remove from group
 	group.Tabs = append(group.Tabs[:a.ActiveTab], group.Tabs[a.ActiveTab+1:]...)
 
 	if a.ActiveTab >= len(group.Tabs) {
@@ -478,6 +485,10 @@ func (a *App) closeCurrentTab() (tea.Model, tea.Cmd) {
 		a.ActiveTab = len(a.Groups[a.ActiveGroup].Tabs) - 1
 	}
 
+	// Make sure window 0 is selected
+	tmux.SelectWindow(a.Session, 0)
+
+	a.saveState()
 	return a, nil
 }
 
@@ -486,7 +497,7 @@ func (a *App) addNewGroup() (tea.Model, tea.Cmd) {
 	color := theme.GetGroupColor(len(a.Groups))
 
 	tabName := "shell"
-	win, err := a.TmuxSession.NewWindow(tabName, "", "")
+	winIdx, err := tmux.CreateWindow(a.Session, tabName)
 	if err != nil {
 		a.StatusMsg = "Failed to create group"
 		return a, nil
@@ -496,13 +507,15 @@ func (a *App) addNewGroup() (tea.Model, tea.Cmd) {
 		Name:  name,
 		Color: color,
 		Tabs: []*Tab{
-			{Name: tabName, TmuxID: win.ID, GroupName: name},
+			{Name: tabName, HoldingWindow: winIdx, GroupName: name},
 		},
 	}
 	a.Groups = append(a.Groups, group)
-	a.ActiveGroup = len(a.Groups) - 1
-	a.ActiveTab = 0
 
+	// Switch to the new group's first tab
+	a.switchToTab(len(a.Groups)-1, 0)
+
+	a.saveState()
 	return a, nil
 }
 
@@ -540,63 +553,30 @@ func (a *App) saveSession() (tea.Model, tea.Cmd) {
 	})
 }
 
+func (a *App) saveState() {
+	SaveState(a.Session, a.Groups, a.ActiveGroup, a.ActiveTab)
+}
+
 // View implements tea.Model
 func (a *App) View() string {
 	if a.Width == 0 || a.Height == 0 {
 		return "Loading..."
 	}
 
-	sidebar := RenderSidebar(
+	return RenderSidebar(
 		a.Groups,
 		a.ActiveGroup,
 		a.ActiveTab,
-		sidebarWidth,
-		a.Height-1,
-		a.Focus == FocusSidebar,
+		a.Width,
+		a.Height,
 		a.Renaming,
 		a.RenameInput,
+		a.StatusMsg,
 	)
-
-	termWidth := a.Width - sidebarWidth - 4
-	termHeight := a.Height - 3
-	tabName := "shell"
-	tab := a.ActiveTabRef()
-	if tab != nil {
-		tabName = tab.Name
-	}
-
-	terminal := RenderTerminal(
-		a.TermContent,
-		tabName,
-		termWidth,
-		termHeight,
-		a.Focus == FocusTerminal,
-	)
-
-	main := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, terminal)
-
-	statusContent := a.StatusMsg
-	if statusContent == "" {
-		focusLabel := "SIDEBAR"
-		if a.Focus == FocusTerminal {
-			focusLabel = "TERMINAL"
-		}
-		statusContent = fmt.Sprintf(" %s │ %d groups │ %d tabs │ n:new  g:group  s:save  d:close",
-			focusLabel, len(a.Groups), a.TotalTabs())
-	}
-
-	statusBar := lipgloss.NewStyle().
-		Width(a.Width).
-		Background(theme.Surface0).
-		Foreground(theme.Subtext0).
-		Render(statusContent)
-
-	return lipgloss.JoinVertical(lipgloss.Left, main, statusBar)
 }
 
-// Cleanup kills the tmux session
+// Cleanup removes state file and kills the tmux session
 func (a *App) Cleanup() {
-	if a.TmuxSession != nil {
-		a.TmuxSession.Kill()
-	}
+	RemoveState(a.Session)
+	tmux.KillSession(a.Session)
 }

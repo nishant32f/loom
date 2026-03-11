@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nishant32f/loom/config"
@@ -21,16 +22,15 @@ func main() {
 	// Handle subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "--sidebar":
+			// Internal: run as sidebar TUI inside tmux pane
+			runSidebar()
+			return
 		case "list":
 			listSessions()
 			return
-		case "save":
-			if len(os.Args) < 3 {
-				fmt.Println("Usage: loom save <name>")
-				os.Exit(1)
-			}
-			// Save is handled in the TUI via ctrl+s
-			fmt.Println("Use ctrl+s inside Loom to save the current session.")
+		case "new":
+			launchNew()
 			return
 		case "restore":
 			if len(os.Args) < 3 {
@@ -39,14 +39,11 @@ func main() {
 			}
 			launchWithConfig(os.Args[2])
 			return
-		case "new":
-			launchNew()
-			return
 		case "help", "--help", "-h":
 			printHelp()
 			return
 		case "version", "--version", "-v":
-			fmt.Println("Loom v0.1.0")
+			fmt.Println("Loom v0.2.0")
 			return
 		}
 	}
@@ -58,16 +55,33 @@ func main() {
 		os.Exit(1)
 	}
 
-	launch(cfg)
+	launchSession(cfg)
 }
 
-func launch(cfg *config.Config) {
-	app, err := model.NewApp(cfg)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+// runSidebar runs the sidebar-only TUI (called inside the left tmux pane)
+func runSidebar() {
+	var sessionName string
+	for i, arg := range os.Args {
+		if arg == "--session" && i+1 < len(os.Args) {
+			sessionName = os.Args[i+1]
+			break
+		}
+	}
+	if sessionName == "" {
+		fmt.Fprintln(os.Stderr, "Error: --session <name> required with --sidebar")
 		os.Exit(1)
 	}
-	defer app.Cleanup()
+
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = config.DefaultConfig()
+	}
+
+	app, err := model.NewApp(cfg, sessionName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	p := tea.NewProgram(
 		app,
@@ -76,10 +90,61 @@ func launch(cfg *config.Config) {
 	)
 
 	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error running Loom: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error running sidebar: %v\n", err)
 		os.Exit(1)
 	}
+
+	// When sidebar quits, clean up
+	app.Cleanup()
 }
+
+// launchSession creates a tmux session with sidebar + terminal layout and attaches
+func launchSession(cfg *config.Config) {
+	sessionName := fmt.Sprintf("loom_%d", time.Now().UnixNano())
+
+	// 1. Create the tmux session (detached)
+	if err := tmux.CreateSession(sessionName); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 2. Split window 0: left pane (sidebar, 24 cols) + right pane (terminal)
+	if err := tmux.SplitForSidebar(sessionName, sidebarPaneWidth); err != nil {
+		fmt.Printf("Error splitting: %v\n", err)
+		tmux.KillSession(sessionName)
+		os.Exit(1)
+	}
+
+	// 3. Get our executable path and start the sidebar TUI in the left pane (:0.0)
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Error finding executable: %v\n", err)
+		tmux.KillSession(sessionName)
+		os.Exit(1)
+	}
+
+	sidebarCmd := fmt.Sprintf("%s --sidebar --session %s", exe, sessionName)
+	if err := tmux.RunInPane(sessionName, sessionName+":0.0", sidebarCmd); err != nil {
+		fmt.Printf("Error starting sidebar: %v\n", err)
+		tmux.KillSession(sessionName)
+		os.Exit(1)
+	}
+
+	// 4. Focus the right pane (the terminal)
+	tmux.SelectPane(sessionName, sessionName+":0.1")
+
+	// 5. Attach or switch
+	if tmux.IsInsideTmux() {
+		if err := tmux.SwitchClient(sessionName); err != nil {
+			fmt.Printf("Error switching client: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		tmux.Attach(sessionName)
+	}
+}
+
+const sidebarPaneWidth = 26 // a bit wider than 24 to account for pane border
 
 func launchNew() {
 	cfg := &config.Config{
@@ -95,7 +160,7 @@ func launchNew() {
 			},
 		},
 	}
-	launch(cfg)
+	launchSession(cfg)
 }
 
 func launchWithConfig(name string) {
@@ -106,7 +171,7 @@ func launchWithConfig(name string) {
 		listSessions()
 		os.Exit(1)
 	}
-	launch(cfg)
+	launchSession(cfg)
 }
 
 func listSessions() {
@@ -128,7 +193,7 @@ func listSessions() {
 }
 
 func printHelp() {
-	fmt.Println(`Loom - A beautiful TUI terminal tab manager
+	fmt.Println(`Loom - A beautiful TUI terminal tab manager (native tmux)
 
 Usage:
   loom                    Launch with default/last session
@@ -138,16 +203,18 @@ Usage:
   loom version            Show version
   loom help               Show this help
 
-Keybindings:
+Inside Loom (sidebar):
   ↑/↓ or j/k      Navigate tabs
-  Enter            Focus terminal
-  Esc              Back to sidebar
-  Ctrl+T           New tab
-  Ctrl+W           Close tab
-  Ctrl+G           New group
-  Ctrl+S           Save session
-  Ctrl+\           Split pane
-  F2               Rename tab
+  Enter            Switch to tab (focus terminal)
+  n                New tab
+  d/x              Close tab
+  g                New group
+  r / F2           Rename tab
   Tab              Toggle group collapse
-  q / Ctrl+C       Quit`)
+  s                Save session
+  q / Ctrl+C       Quit
+
+Navigation:
+  Ctrl+B →         Focus terminal pane
+  Ctrl+B ←         Focus sidebar pane`)
 }

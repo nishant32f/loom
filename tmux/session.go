@@ -2,128 +2,108 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
-	"time"
+	"syscall"
 )
 
-// Session manages tmux sessions for Loom
-type Session struct {
-	Name    string
-	Windows []Window
-}
-
-// Window represents a tmux window (maps to a Loom tab)
-type Window struct {
-	ID   string
-	Name string
-}
-
-// sessionPrefix is used to namespace loom tmux sessions
-const sessionPrefix = "loom_"
-
-// NewSession creates a new tmux session
-func NewSession() (*Session, error) {
-	name := fmt.Sprintf("%s%d", sessionPrefix, time.Now().UnixNano())
-
-	cmd := exec.Command("tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50")
+// CreateSession creates a new detached tmux session
+func CreateSession(name string) error {
+	cmd := exec.Command("tmux", "new-session", "-d", "-s", name)
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to create tmux session: %w", err)
+		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
-
-	s := &Session{
-		Name: name,
-		Windows: []Window{
-			{ID: name + ":0", Name: "shell"},
-		},
-	}
-	return s, nil
+	// Configure session
+	run("tmux", "set", "-t", name, "remain-on-exit", "off")
+	run("tmux", "set", "-t", name, "mouse", "on")
+	run("tmux", "set", "-t", name, "pane-border-style", "fg=colour238")
+	run("tmux", "set", "-t", name, "status", "off")
+	return nil
 }
 
-// NewWindow creates a new window in the session
-func (s *Session) NewWindow(name string, command string, cwd string) (*Window, error) {
-	args := []string{"new-window", "-t", s.Name, "-n", name}
-	if cwd != "" {
-		args = append(args, "-c", expandHome(cwd))
-	}
-
-	cmd := exec.Command("tmux", args...)
+// SplitForSidebar splits window 0 with a left pane of the given width for the sidebar.
+// After this call, :0.0 is left (sidebar), :0.1 is right (terminal).
+func SplitForSidebar(session string, width int) error {
+	// Split horizontally: the new pane appears to the left
+	target := session + ":0"
+	cmd := exec.Command("tmux", "split-window", "-h", "-b", "-l", fmt.Sprintf("%d", width), "-t", target)
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("failed to create window: %w", err)
-	}
-
-	// Get the window ID
-	winID := fmt.Sprintf("%s:%d", s.Name, len(s.Windows))
-	w := Window{ID: winID, Name: name}
-	s.Windows = append(s.Windows, w)
-
-	if command != "" {
-		SendKeys(winID, command)
-	}
-
-	return &w, nil
-}
-
-// SendKeys sends keystrokes to a tmux pane
-func SendKeys(target string, keys string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", target, keys, "Enter")
-	return cmd.Run()
-}
-
-// CapturePaneContent captures the visible content of a tmux pane
-func CapturePaneContent(target string, width, height int) (string, error) {
-	// Resize the pane to match our viewport
-	resizeCmd := exec.Command("tmux", "resize-window", "-t", target, "-x", fmt.Sprintf("%d", width), "-y", fmt.Sprintf("%d", height))
-	_ = resizeCmd.Run()
-
-	cmd := exec.Command("tmux", "capture-pane", "-t", target, "-p", "-e")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to capture pane: %w", err)
-	}
-	return string(out), nil
-}
-
-// SplitWindow splits the current window
-func SplitWindow(target string, horizontal bool, command string) error {
-	direction := "-v"
-	if horizontal {
-		direction = "-h"
-	}
-
-	args := []string{"split-window", direction, "-t", target}
-	cmd := exec.Command("tmux", args...)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to split window: %w", err)
-	}
-
-	if command != "" {
-		SendKeys(target, command)
+		return fmt.Errorf("failed to split for sidebar: %w", err)
 	}
 	return nil
 }
 
-// KillWindow kills a tmux window
-func KillWindow(target string) error {
+// CreateWindow creates a new tmux window and returns its index
+func CreateWindow(session string, name string) (int, error) {
+	// Create window and print its index
+	cmd := exec.Command("tmux", "new-window", "-t", session, "-n", name, "-P", "-F", "#{window_index}")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to create window: %w", err)
+	}
+	idx, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse window index: %w", err)
+	}
+	return idx, nil
+}
+
+// SwapPane swaps two panes. source and target are like "session:0.1" and "session:2.0"
+func SwapPane(session, source, target string) error {
+	cmd := exec.Command("tmux", "swap-pane", "-s", source, "-t", target)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to swap pane: %w", err)
+	}
+	return nil
+}
+
+// SelectPane focuses a pane (e.g. "session:0.1")
+func SelectPane(session, pane string) error {
+	cmd := exec.Command("tmux", "select-pane", "-t", pane)
+	return cmd.Run()
+}
+
+// RunInPane sends a command string to a pane
+func RunInPane(session, pane, command string) error {
+	cmd := exec.Command("tmux", "send-keys", "-t", pane, command, "Enter")
+	return cmd.Run()
+}
+
+// KillWindow kills a tmux window by index
+func KillWindow(session string, windowIdx int) error {
+	target := fmt.Sprintf("%s:%d", session, windowIdx)
 	cmd := exec.Command("tmux", "kill-window", "-t", target)
 	return cmd.Run()
 }
 
 // KillSession kills the entire tmux session
-func (s *Session) Kill() error {
-	cmd := exec.Command("tmux", "kill-session", "-t", s.Name)
+func KillSession(name string) error {
+	cmd := exec.Command("tmux", "kill-session", "-t", name)
 	return cmd.Run()
 }
 
 // RenameWindow renames a tmux window
-func RenameWindow(target string, newName string) error {
-	cmd := exec.Command("tmux", "rename-window", "-t", target, newName)
+func RenameWindow(session string, windowIdx int, name string) error {
+	target := fmt.Sprintf("%s:%d", session, windowIdx)
+	cmd := exec.Command("tmux", "rename-window", "-t", target, name)
 	return cmd.Run()
 }
 
-// SelectWindow switches to a specific window
-func SelectWindow(target string) error {
-	cmd := exec.Command("tmux", "select-window", "-t", target)
+// Attach exec's into tmux attach-session (replaces the current process)
+func Attach(session string) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tmux not found: %v\n", err)
+		os.Exit(1)
+	}
+	syscall.Exec(tmuxPath, []string{"tmux", "attach-session", "-t", session}, os.Environ())
+}
+
+// SwitchClient switches the current tmux client to the given session
+func SwitchClient(session string) error {
+	cmd := exec.Command("tmux", "switch-client", "-t", session)
 	return cmd.Run()
 }
 
@@ -133,23 +113,19 @@ func IsTmuxAvailable() bool {
 	return err == nil
 }
 
-// expandHome expands ~ to the home directory
-func expandHome(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, _ := exec.Command("sh", "-c", "echo $HOME").Output()
-		return strings.TrimSpace(string(home)) + path[1:]
-	}
-	return path
+// IsInsideTmux returns true if we're already inside a tmux session
+func IsInsideTmux() bool {
+	return os.Getenv("TMUX") != ""
 }
 
-// SendRawKeys sends raw key input to a pane (for terminal interaction)
-func SendRawKeys(target string, keys string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", target, "-l", keys)
+// SelectWindow selects a window (used internally)
+func SelectWindow(session string, windowIdx int) error {
+	target := fmt.Sprintf("%s:%d", session, windowIdx)
+	cmd := exec.Command("tmux", "select-window", "-t", target)
 	return cmd.Run()
 }
 
-// SendSpecialKey sends a special key (like Enter, Backspace, etc.)
-func SendSpecialKey(target string, key string) error {
-	cmd := exec.Command("tmux", "send-keys", "-t", target, key)
-	return cmd.Run()
+// run is a helper that runs a command silently
+func run(name string, args ...string) {
+	exec.Command(name, args...).Run()
 }

@@ -4,11 +4,11 @@ import "github.com/charmbracelet/lipgloss"
 
 // Tab represents a single terminal tab
 type Tab struct {
-	Name      string
-	TmuxID    string
-	Command   string
-	Cwd       string
-	GroupName string
+	Name          string
+	HoldingWindow int // -1 = active (pane is at :0.1), N = stored in window N
+	Command       string
+	Cwd           string
+	GroupName     string
 }
 
 // Group represents a collapsible group of tabs

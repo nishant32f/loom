@@ -15,7 +15,7 @@ type SidebarItem struct {
 	TabIdx   int
 }
 
-// padLine pads a string to fill sidebarWidth with spaces
+// padLine pads a string to fill width with spaces
 func padLine(s string, width int) string {
 	visLen := lipgloss.Width(s)
 	if visLen >= width {
@@ -24,9 +24,12 @@ func padLine(s string, width int) string {
 	return s + strings.Repeat(" ", width-visLen)
 }
 
-// RenderSidebar renders the sidebar with groups and tabs
-func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, sidebarWidth, height int, focused bool, renaming bool, renameInput string) string {
-	w := sidebarWidth - 2 // content width (leave room for border)
+// RenderSidebar renders the sidebar at full pane width (no right border — tmux provides it)
+func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, width, height int, renaming bool, renameInput string, statusMsg string) string {
+	w := width - 1 // small right margin
+	if w < 10 {
+		w = 10
+	}
 	var lines []string
 
 	// Logo line
@@ -84,7 +87,7 @@ func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, sidebarWid
 
 	// Fill remaining space
 	contentLines := len(lines)
-	bottomLines := 3 // divider + buttons + help
+	bottomLines := 5 // divider + buttons + help + nav hint + status
 	for i := contentLines; i < height-bottomLines; i++ {
 		lines = append(lines, strings.Repeat(" ", w))
 	}
@@ -95,28 +98,37 @@ func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, sidebarWid
 
 	// Buttons
 	btnStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Surface1)
-	buttons := " " + btnStyle.Render(" [+] tab ") + " " + btnStyle.Render(" [g] grp ")
+	buttons := " " + btnStyle.Render(" [n] tab ") + " " + btnStyle.Render(" [g] grp ")
 	lines = append(lines, padLine(buttons, w))
 
 	// Help
 	helpStyle := lipgloss.NewStyle().Foreground(theme.Overlay0)
-	lines = append(lines, padLine(helpStyle.Render(" r:rename n:new ↑↓:nav"), w))
+	lines = append(lines, padLine(helpStyle.Render(" r:rename d:close ↑↓:nav"), w))
+
+	// Navigation hint
+	navStyle := lipgloss.NewStyle().Foreground(theme.Overlay1).Italic(true)
+	lines = append(lines, padLine(navStyle.Render(" Ctrl+B ← to navigate here"), w))
+
+	// Status line
+	if statusMsg != "" {
+		statStyle := lipgloss.NewStyle().Foreground(theme.Yellow)
+		lines = append(lines, padLine(statStyle.Render(" "+statusMsg), w))
+	} else {
+		tabCount := 0
+		for _, g := range groups {
+			tabCount += len(g.Tabs)
+		}
+		statStyle := lipgloss.NewStyle().Foreground(theme.Subtext0)
+		lines = append(lines, padLine(statStyle.Render(fmt.Sprintf(" %d groups │ %d tabs", len(groups), tabCount)), w))
+	}
 
 	content := strings.Join(lines, "\n")
 
-	borderColor := theme.Surface2
-	if focused {
-		borderColor = theme.Lavender
-	}
-
 	container := lipgloss.NewStyle().
-		Width(sidebarWidth).
+		Width(width).
 		Height(height).
 		Background(theme.Mantle).
-		Foreground(theme.Text).
-		BorderRight(true).
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderRightForeground(borderColor)
+		Foreground(theme.Text)
 
 	return container.Render(content)
 }
