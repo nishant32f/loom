@@ -133,7 +133,11 @@ func launchSession(cfg *config.Config) {
 	// 4. Focus the right pane (the terminal)
 	tmux.SelectPane(sessionName, sessionName+":0.1")
 
-	// 5. Attach or switch
+	// 5. Set a hook to resize the sidebar pane after the client attaches
+	//    (detached sessions have small default size; proportional rescaling makes panes 50/50)
+	tmux.SetAfterAttachResize(sessionName, sidebarPaneWidth)
+
+	// 6. Attach or switch
 	if tmux.IsInsideTmux() {
 		if err := tmux.SwitchClient(sessionName); err != nil {
 			fmt.Printf("Error switching client: %v\n", err)

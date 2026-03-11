@@ -132,6 +132,17 @@ func SelectWindow(session string, windowIdx int) error {
 	return cmd.Run()
 }
 
+// SetAfterAttachResize sets a tmux hook to resize the sidebar pane after client attaches.
+// This is needed because detached sessions have a small default size, and when a large
+// terminal attaches, tmux proportionally rescales all panes (making sidebar too wide).
+func SetAfterAttachResize(session string, width int) {
+	resizeCmd := fmt.Sprintf("resize-pane -t %s:0.0 -x %d", session, width)
+	// Use after-resize-window hook — fires when the window resizes on attach
+	run("tmux", "set-hook", "-t", session, "client-attached", resizeCmd)
+	// Also set client-resized for terminal resize events
+	run("tmux", "set-hook", "-t", session, "client-resized", resizeCmd)
+}
+
 // run is a helper that runs a command silently
 func run(name string, args ...string) {
 	exec.Command(name, args...).Run()
