@@ -11,34 +11,15 @@ type Tab struct {
 	GroupName     string
 }
 
+// IsActive returns true if the tab's pane is currently in the main terminal pane
+func (t *Tab) IsActive() bool {
+	return t.HoldingWindow == -1
+}
+
 // Group represents a collapsible group of tabs
 type Group struct {
 	Name      string
 	Color     lipgloss.Color
 	Tabs      []*Tab
 	Collapsed bool
-}
-
-// VisibleTabs returns tabs only if the group is not collapsed
-func (g *Group) VisibleTabs() []*Tab {
-	if g.Collapsed {
-		return nil
-	}
-	return g.Tabs
-}
-
-// AddTab adds a tab to the group
-func (g *Group) AddTab(tab *Tab) {
-	tab.GroupName = g.Name
-	g.Tabs = append(g.Tabs, tab)
-}
-
-// RemoveTab removes a tab by index
-func (g *Group) RemoveTab(index int) *Tab {
-	if index < 0 || index >= len(g.Tabs) {
-		return nil
-	}
-	tab := g.Tabs[index]
-	g.Tabs = append(g.Tabs[:index], g.Tabs[index+1:]...)
-	return tab
 }

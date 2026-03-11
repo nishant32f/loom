@@ -8,12 +8,34 @@ import (
 	"github.com/nishant32f/loom/theme"
 )
 
+// Sidebar item type constants
+const (
+	itemSpacer      = "spacer"
+	itemGroupHeader = "group_header"
+	itemTab         = "tab"
+)
+
 // SidebarItem represents a clickable item in the sidebar
 type SidebarItem struct {
-	Type     string // "group_header", "tab", "button", "spacer"
+	Type     string
 	GroupIdx int
 	TabIdx   int
 }
+
+// Cached styles (created once, not per render)
+var (
+	logoStyle      = lipgloss.NewStyle().Bold(true).Foreground(theme.Mauve)
+	activeTabDot   = lipgloss.NewStyle().Foreground(theme.Green).Bold(true)
+	activeTabName  = lipgloss.NewStyle().Foreground(theme.Text).Bold(true)
+	inactiveTab    = lipgloss.NewStyle().Foreground(theme.Subtext1)
+	renameStyle    = lipgloss.NewStyle().Foreground(theme.Yellow)
+	dividerStyle   = lipgloss.NewStyle().Foreground(theme.Surface2)
+	buttonStyle    = lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Surface1)
+	helpStyle      = lipgloss.NewStyle().Foreground(theme.Overlay0)
+	navHintStyle   = lipgloss.NewStyle().Foreground(theme.Overlay1).Italic(true)
+	statusStyle    = lipgloss.NewStyle().Foreground(theme.Subtext0)
+	statusMsgStyle = lipgloss.NewStyle().Foreground(theme.Yellow)
+)
 
 // padLine pads a string to fill width with spaces
 func padLine(s string, width int) string {
@@ -24,33 +46,29 @@ func padLine(s string, width int) string {
 	return s + strings.Repeat(" ", width-visLen)
 }
 
-// RenderSidebar renders the sidebar at full pane width (no right border — tmux provides it)
+// RenderSidebar renders the sidebar at full pane width
 func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, width, height int, renaming bool, renameInput string, statusMsg string) string {
-	w := width - 1 // small right margin
+	w := width - 1
 	if w < 10 {
 		w = 10
 	}
+	emptyLine := strings.Repeat(" ", w)
 	var lines []string
 
-	// Logo line
-	logo := lipgloss.NewStyle().Bold(true).Foreground(theme.Mauve).Render(" ◈ Loom")
-	lines = append(lines, padLine(logo, w))
-
-	// Empty separator
-	lines = append(lines, strings.Repeat(" ", w))
+	lines = append(lines, padLine(logoStyle.Render(" ◈ Loom"), w))
+	lines = append(lines, emptyLine)
 
 	for gi, group := range groups {
-		// Group header
 		arrow := "▼"
 		if group.Collapsed {
 			arrow = "▶"
 		}
 
 		groupStyle := lipgloss.NewStyle().Bold(true).Foreground(group.Color)
-		header := groupStyle.Render(fmt.Sprintf(" %s %s", arrow, strings.ToUpper(group.Name)))
-		lines = append(lines, padLine(header, w))
+		lines = append(lines, padLine(groupStyle.Render(fmt.Sprintf(" %s %s", arrow, strings.ToUpper(group.Name))), w))
 
 		if !group.Collapsed {
+			connStyle := lipgloss.NewStyle().Foreground(group.Color)
 			for ti, tab := range group.Tabs {
 				isActive := gi == activeGroupIdx && ti == activeTabIdx
 
@@ -58,71 +76,43 @@ func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, width, hei
 				if ti == len(group.Tabs)-1 {
 					connector = "┗━"
 				}
-
-				connStyle := lipgloss.NewStyle().Foreground(group.Color)
 				prefix := connStyle.Render(" " + connector)
 
-				if isActive {
-					if renaming {
-						inputStyle := lipgloss.NewStyle().Foreground(theme.Yellow)
-						line := prefix + inputStyle.Render(" "+renameInput+"█")
-						lines = append(lines, padLine(line, w))
-					} else {
-						dotStyle := lipgloss.NewStyle().Foreground(theme.Green).Bold(true)
-						nameStyle := lipgloss.NewStyle().Foreground(theme.Text).Bold(true)
-						line := prefix + dotStyle.Render(" ●") + nameStyle.Render(" "+tab.Name)
-						lines = append(lines, padLine(line, w))
-					}
+				var line string
+				if isActive && renaming {
+					line = prefix + renameStyle.Render(" "+renameInput+"█")
+				} else if isActive {
+					line = prefix + activeTabDot.Render(" ●") + activeTabName.Render(" "+tab.Name)
 				} else {
-					nameStyle := lipgloss.NewStyle().Foreground(theme.Subtext1)
-					line := prefix + nameStyle.Render("  "+tab.Name)
-					lines = append(lines, padLine(line, w))
+					line = prefix + inactiveTab.Render("  "+tab.Name)
 				}
+				lines = append(lines, padLine(line, w))
 			}
 		}
 
-		// Spacer after group
-		lines = append(lines, strings.Repeat(" ", w))
+		lines = append(lines, emptyLine)
 	}
 
 	// Fill remaining space
-	contentLines := len(lines)
-	bottomLines := 5 // divider + buttons + help + nav hint + status
-	for i := contentLines; i < height-bottomLines; i++ {
-		lines = append(lines, strings.Repeat(" ", w))
+	bottomLines := 5
+	for i := len(lines); i < height-bottomLines; i++ {
+		lines = append(lines, emptyLine)
 	}
 
-	// Divider
-	divStyle := lipgloss.NewStyle().Foreground(theme.Surface2)
-	lines = append(lines, divStyle.Render(strings.Repeat("─", w)))
-
-	// Buttons
-	btnStyle := lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Surface1)
-	buttons := " " + btnStyle.Render(" [n] tab ") + " " + btnStyle.Render(" [g] grp ")
-	lines = append(lines, padLine(buttons, w))
-
-	// Help
-	helpStyle := lipgloss.NewStyle().Foreground(theme.Overlay0)
+	lines = append(lines, dividerStyle.Render(strings.Repeat("─", w)))
+	lines = append(lines, padLine(" "+buttonStyle.Render(" [n] tab ")+" "+buttonStyle.Render(" [g] grp "), w))
 	lines = append(lines, padLine(helpStyle.Render(" r:rename d:close ↑↓:nav"), w))
+	lines = append(lines, padLine(navHintStyle.Render(" Ctrl+B ← to navigate here"), w))
 
-	// Navigation hint
-	navStyle := lipgloss.NewStyle().Foreground(theme.Overlay1).Italic(true)
-	lines = append(lines, padLine(navStyle.Render(" Ctrl+B ← to navigate here"), w))
-
-	// Status line
 	if statusMsg != "" {
-		statStyle := lipgloss.NewStyle().Foreground(theme.Yellow)
-		lines = append(lines, padLine(statStyle.Render(" "+statusMsg), w))
+		lines = append(lines, padLine(statusMsgStyle.Render(" "+statusMsg), w))
 	} else {
 		tabCount := 0
 		for _, g := range groups {
 			tabCount += len(g.Tabs)
 		}
-		statStyle := lipgloss.NewStyle().Foreground(theme.Subtext0)
-		lines = append(lines, padLine(statStyle.Render(fmt.Sprintf(" %d groups │ %d tabs", len(groups), tabCount)), w))
+		lines = append(lines, padLine(statusStyle.Render(fmt.Sprintf(" %d groups │ %d tabs", len(groups), tabCount)), w))
 	}
-
-	content := strings.Join(lines, "\n")
 
 	container := lipgloss.NewStyle().
 		Width(width).
@@ -130,33 +120,24 @@ func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, width, hei
 		Background(theme.Mantle).
 		Foreground(theme.Text)
 
-	return container.Render(content)
+	return container.Render(strings.Join(lines, "\n"))
 }
 
 // GetSidebarItems builds the list of clickable items for mouse interaction
 func GetSidebarItems(groups []*Group) []SidebarItem {
 	var items []SidebarItem
 
-	// Logo line + empty line
-	items = append(items, SidebarItem{Type: "spacer"})
-	items = append(items, SidebarItem{Type: "spacer"})
+	items = append(items, SidebarItem{Type: itemSpacer}, SidebarItem{Type: itemSpacer})
 
 	for gi, group := range groups {
-		items = append(items, SidebarItem{
-			Type:     "group_header",
-			GroupIdx: gi,
-		})
+		items = append(items, SidebarItem{Type: itemGroupHeader, GroupIdx: gi})
 
 		if !group.Collapsed {
 			for ti := range group.Tabs {
-				items = append(items, SidebarItem{
-					Type:     "tab",
-					GroupIdx: gi,
-					TabIdx:   ti,
-				})
+				items = append(items, SidebarItem{Type: itemTab, GroupIdx: gi, TabIdx: ti})
 			}
 		}
-		items = append(items, SidebarItem{Type: "spacer"})
+		items = append(items, SidebarItem{Type: itemSpacer})
 	}
 
 	return items

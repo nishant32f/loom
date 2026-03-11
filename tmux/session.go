@@ -143,6 +143,32 @@ func SetAfterAttachResize(session string, width int) {
 	run("tmux", "set-hook", "-t", session, "client-resized", resizeCmd)
 }
 
+// PaneTarget returns a tmux pane target like "session:0.1"
+func PaneTarget(session string, windowIdx, paneIdx int) string {
+	return fmt.Sprintf("%s:%d.%d", session, windowIdx, paneIdx)
+}
+
+// WindowTarget returns a tmux window target like "session:2"
+func WindowTarget(session string, windowIdx int) string {
+	return fmt.Sprintf("%s:%d", session, windowIdx)
+}
+
+// TerminalPane returns the target for the main terminal pane (:0.1)
+func TerminalPane(session string) string {
+	return session + ":0.1"
+}
+
+// SidebarPane returns the target for the sidebar pane (:0.0)
+func SidebarPane(session string) string {
+	return session + ":0.0"
+}
+
+// FocusTerminal selects window 0 and focuses the terminal pane
+func FocusTerminal(session string) {
+	SelectWindow(session, 0)
+	SelectPane(session, TerminalPane(session))
+}
+
 // run is a helper that runs a command silently
 func run(name string, args ...string) {
 	exec.Command(name, args...).Run()
