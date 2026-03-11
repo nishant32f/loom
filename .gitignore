@@ -1,0 +1,7 @@
+loom
+*.exe
+*.dll
+*.so
+*.dylib
+dist/
+.DS_Store
