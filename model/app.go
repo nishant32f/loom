@@ -94,7 +94,7 @@ func NewApp(cfg *config.Config, session string) (*App, error) {
 				}
 				group.Tabs = append(group.Tabs, tab)
 				if tc.Cmd != "" {
-					tmux.RunInPane(session, fmt.Sprintf("%s:%d.0", session, winIdx), tc.Cmd)
+					tmux.RunInPane(session, fmt.Sprintf("%s:%d", session, winIdx), tc.Cmd)
 				}
 			}
 		}
@@ -322,9 +322,9 @@ func (a *App) switchToTab(groupIdx, tabIdx int) {
 
 	holdingWin := newTab.HoldingWindow
 
-	// Swap: right pane (:0.1) <-> holding window's pane (:W.0)
+	// Swap: right pane (:0.1) <-> holding window's pane (:W — no .0, let tmux pick the only pane)
 	source := fmt.Sprintf("%s:0.1", a.Session)
-	target := fmt.Sprintf("%s:%d.0", a.Session, holdingWin)
+	target := fmt.Sprintf("%s:%d", a.Session, holdingWin)
 	err := tmux.SwapPane(a.Session, source, target)
 	if err != nil {
 		a.StatusMsg = "Swap failed"
@@ -461,7 +461,7 @@ func (a *App) closeCurrentTab() (tea.Model, tea.Cmd) {
 			// Swap the replacement in
 			repTab := a.Groups[replacementGroup].Tabs[replacementTab]
 			source := fmt.Sprintf("%s:0.1", a.Session)
-			target := fmt.Sprintf("%s:%d.0", a.Session, repTab.HoldingWindow)
+			target := fmt.Sprintf("%s:%d", a.Session, repTab.HoldingWindow)
 			holdingWin := repTab.HoldingWindow
 			tmux.SwapPane(a.Session, source, target)
 			repTab.HoldingWindow = -1

@@ -21,7 +21,7 @@ func CreateSession(name string) error {
 	run("tmux", "set", "-t", name, "pane-border-style", "fg=colour238")
 	run("tmux", "set", "-t", name, "status", "off")
 	run("tmux", "set", "-t", name, "base-index", "0")
-	run("tmux", "set", "-t", name, "pane-base-index", "0")
+	run("tmux", "setw", "-t", name, "pane-base-index", "0")
 	// Renumber the existing window to 0 if it started at 1
 	run("tmux", "move-window", "-s", name+":1", "-t", name+":0")
 	return nil
