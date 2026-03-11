@@ -213,9 +213,21 @@ func (a App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		x := msg.X
 		if x < sidebarWidth {
-			// Click in sidebar
-			items := GetSidebarItems(a.Groups)
 			y := msg.Y
+			sidebarHeight := a.Height - 1
+
+			// Check if click is on bottom buttons (last 3 rows of sidebar)
+			if y >= sidebarHeight-3 && y < sidebarHeight-1 {
+				// Button row: [+] tab  [g] grp
+				if x < 10 {
+					return a.addNewTab()
+				} else {
+					return a.addNewGroup()
+				}
+			}
+
+			// Click in sidebar tab/group area
+			items := GetSidebarItems(a.Groups)
 			if y >= 0 && y < len(items) {
 				item := items[y]
 				switch item.Type {
@@ -297,11 +309,11 @@ func (a App) handleTerminalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			tmux.SplitWindow(tab.TmuxID, true, "")
 		}
 		return a, nil
-	case "ctrl+t":
+	case "alt+n":
 		return a.addNewTab()
-	case "ctrl+w":
+	case "alt+w":
 		return a.closeCurrentTab()
-	case "ctrl+s":
+	case "alt+s":
 		return a.saveSession()
 	case "enter":
 		if tab != nil {
@@ -356,15 +368,15 @@ func (a App) handleSidebarKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.ActiveGroup < len(a.Groups) {
 			a.Groups[a.ActiveGroup].Collapsed = !a.Groups[a.ActiveGroup].Collapsed
 		}
-	case "ctrl+t":
+	case "n":
 		return a.addNewTab()
-	case "ctrl+w":
+	case "d", "x":
 		return a.closeCurrentTab()
-	case "ctrl+g":
+	case "g":
 		return a.addNewGroup()
-	case "ctrl+s":
+	case "s":
 		return a.saveSession()
-	case "f2":
+	case "r", "f2":
 		tab := a.ActiveTabRef()
 		if tab != nil {
 			a.Renaming = true
@@ -591,7 +603,7 @@ func (a App) View() string {
 		if a.Focus == FocusTerminal {
 			focusLabel = "TERMINAL"
 		}
-		statusContent = fmt.Sprintf(" %s │ %d groups │ %d tabs │ ctrl+t:new  ctrl+g:group  ctrl+s:save",
+		statusContent = fmt.Sprintf(" %s │ %d groups │ %d tabs │ n:new  g:group  s:save  d:close",
 			focusLabel, len(a.Groups), a.TotalVisibleTabs())
 	}
 

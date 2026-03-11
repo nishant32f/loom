@@ -85,7 +85,7 @@ func RenderSidebar(groups []*Group, activeGroupIdx, activeTabIdx int, sidebarWid
 	lines = append(lines, buttons)
 
 	// Help text
-	help := theme.HelpStyle.Render("F2:rename  ↑↓:nav")
+	help := theme.HelpStyle.Render("r:rename n:new ↑↓:nav")
 	lines = append(lines, help)
 
 	content := strings.Join(lines, "\n")

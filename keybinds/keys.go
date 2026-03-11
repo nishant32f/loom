@@ -32,16 +32,16 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("↓/j", "down"),
 		),
 		NewTab: key.NewBinding(
-			key.WithKeys("ctrl+t"),
-			key.WithHelp("ctrl+t", "new tab"),
+			key.WithKeys("n"),
+			key.WithHelp("n", "new tab"),
 		),
 		CloseTab: key.NewBinding(
-			key.WithKeys("ctrl+w"),
-			key.WithHelp("ctrl+w", "close tab"),
+			key.WithKeys("d", "x"),
+			key.WithHelp("d/x", "close tab"),
 		),
 		RenameTab: key.NewBinding(
-			key.WithKeys("f2"),
-			key.WithHelp("F2", "rename"),
+			key.WithKeys("r", "f2"),
+			key.WithHelp("r/F2", "rename"),
 		),
 		SplitPane: key.NewBinding(
 			key.WithKeys("ctrl+\\"),
@@ -52,12 +52,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("tab", "toggle group"),
 		),
 		NewGroup: key.NewBinding(
-			key.WithKeys("ctrl+g"),
-			key.WithHelp("ctrl+g", "new group"),
+			key.WithKeys("g"),
+			key.WithHelp("g", "new group"),
 		),
 		SaveSession: key.NewBinding(
-			key.WithKeys("ctrl+s"),
-			key.WithHelp("ctrl+s", "save"),
+			key.WithKeys("s"),
+			key.WithHelp("s", "save"),
 		),
 		FocusTerm: key.NewBinding(
 			key.WithKeys("enter"),
