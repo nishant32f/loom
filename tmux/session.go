@@ -30,19 +30,22 @@ func CreateSession(name string) error {
 // SplitForSidebar splits window 0 with a left pane of the given width for the sidebar.
 // After this call, :0.0 is left (sidebar), :0.1 is right (terminal).
 func SplitForSidebar(session string, width int) error {
-	// Split horizontally: the new pane appears to the left
 	target := session + ":0"
+	// Split horizontally, new pane on the left (-b), with fixed column width
 	cmd := exec.Command("tmux", "split-window", "-h", "-b", "-l", fmt.Sprintf("%d", width), "-t", target)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to split for sidebar: %w", err)
 	}
+	// Ensure the sidebar pane stays at the requested width
+	sidebarPane := session + ":0.0"
+	exec.Command("tmux", "resize-pane", "-t", sidebarPane, "-x", fmt.Sprintf("%d", width)).Run()
 	return nil
 }
 
 // CreateWindow creates a new tmux window and returns its index
 func CreateWindow(session string, name string) (int, error) {
 	// Create window and print its index
-	cmd := exec.Command("tmux", "new-window", "-t", session, "-n", name, "-P", "-F", "#{window_index}")
+	cmd := exec.Command("tmux", "new-window", "-d", "-t", session, "-n", name, "-P", "-F", "#{window_index}")
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to create window: %w", err)
