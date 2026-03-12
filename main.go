@@ -148,7 +148,7 @@ func launchSession(cfg *config.Config) {
 	}
 }
 
-const sidebarPaneWidth = 26 // a bit wider than 24 to account for pane border
+const sidebarPaneWidth = 22
 
 func launchNew() {
 	cfg := &config.Config{
@@ -220,5 +220,6 @@ Inside Loom (sidebar):
 
 Navigation:
   Ctrl+B →         Focus terminal pane
-  Ctrl+B ←         Focus sidebar pane`)
+  Ctrl+B ←         Focus sidebar pane
+  Click            Click on sidebar/terminal to focus`)
 }

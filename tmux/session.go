@@ -136,11 +136,11 @@ func SelectWindow(session string, windowIdx int) error {
 // This is needed because detached sessions have a small default size, and when a large
 // terminal attaches, tmux proportionally rescales all panes (making sidebar too wide).
 func SetAfterAttachResize(session string, width int) {
-	resizeCmd := fmt.Sprintf("resize-pane -t %s:0.0 -x %d", session, width)
-	// Use after-resize-window hook — fires when the window resizes on attach
+	// Use run-shell so the resize happens after tmux finishes its own layout pass
+	resizeCmd := fmt.Sprintf("run-shell 'sleep 0.05 && tmux resize-pane -t %s:0.0 -x %d'", session, width)
 	run("tmux", "set-hook", "-t", session, "client-attached", resizeCmd)
-	// Also set client-resized for terminal resize events
 	run("tmux", "set-hook", "-t", session, "client-resized", resizeCmd)
+	run("tmux", "set-hook", "-t", session, "window-layout-changed", resizeCmd)
 }
 
 // PaneTarget returns a tmux pane target like "session:0.1"
@@ -167,6 +167,16 @@ func SidebarPane(session string) string {
 func FocusTerminal(session string) {
 	SelectWindow(session, 0)
 	SelectPane(session, TerminalPane(session))
+}
+
+// PaneCwd returns the current working directory of a tmux pane
+func PaneCwd(pane string) string {
+	cmd := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{pane_current_path}")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // run is a helper that runs a command silently

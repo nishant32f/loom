@@ -2,6 +2,9 @@ package model
 
 import (
 	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -27,6 +30,36 @@ type App struct {
 
 // statusClearMsg clears the status message
 type statusClearMsg struct{}
+
+// gitSyncMsg triggers git info sync for all tabs
+type gitSyncMsg struct{}
+
+// gitSyncInterval is how often we poll for git info
+const gitSyncInterval = 3 * time.Second
+
+// detectGit returns (repoName, branch) for a directory, or empty strings if not a git repo
+func detectGit(dir string) (string, string) {
+	if dir == "" {
+		return "", ""
+	}
+	// Get repo root
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", ""
+	}
+	repoPath := strings.TrimSpace(string(out))
+	repoName := filepath.Base(repoPath)
+
+	// Get branch
+	cmd = exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD")
+	out, err = cmd.Output()
+	if err != nil {
+		return repoName, ""
+	}
+	branch := strings.TrimSpace(string(out))
+	return repoName, branch
+}
 
 // NewApp creates a new sidebar App from config
 func NewApp(cfg *config.Config, session string) (*App, error) {
@@ -105,7 +138,30 @@ func NewApp(cfg *config.Config, session string) (*App, error) {
 
 // Init implements tea.Model
 func (a *App) Init() tea.Cmd {
-	return tea.SetWindowTitle("Loom")
+	return tea.Batch(
+		tea.SetWindowTitle("Loom"),
+		a.syncGitInfo(),
+		tea.Tick(gitSyncInterval, func(t time.Time) tea.Msg { return gitSyncMsg{} }),
+	)
+}
+
+// syncGitInfo updates git repo/branch info for all tabs
+func (a *App) syncGitInfo() tea.Cmd {
+	for _, g := range a.Groups {
+		for _, tab := range g.Tabs {
+			var pane string
+			if tab.IsActive() {
+				pane = tmux.TerminalPane(a.Session)
+			} else {
+				pane = tmux.WindowTarget(a.Session, tab.HoldingWindow)
+			}
+			cwd := tmux.PaneCwd(pane)
+			repo, branch := detectGit(cwd)
+			tab.GitRepo = repo
+			tab.GitBranch = branch
+		}
+	}
+	return nil
 }
 
 // ActiveTabRef returns the currently active tab
@@ -153,6 +209,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.StatusMsg = ""
 		return a, nil
 
+	case gitSyncMsg:
+		a.syncGitInfo()
+		return a, tea.Tick(gitSyncInterval, func(t time.Time) tea.Msg { return gitSyncMsg{} })
+
 	case tea.MouseMsg:
 		return a.handleMouse(msg)
 
@@ -183,7 +243,7 @@ func (a *App) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 
 		// Click in tab/group area
-		items := GetSidebarItems(a.Groups)
+		items := GetSidebarItems(a.Groups, a.ActiveGroup, a.ActiveTab, a.Width, a.Renaming, a.RenameInput)
 		if y >= 0 && y < len(items) {
 			item := items[y]
 			switch item.Type {
